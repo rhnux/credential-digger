@@ -1,0 +1,35 @@
+name: 'Credential Digger Scan'
+description: 'Scan code for hardcoded secrets and filter false positives with ML'
+inputs:
+  repo_path:
+    description: 'Target repository path or URL'
+    required: true
+    default: '.'
+  export_sarif:
+    description: 'Path to save output SARIF file'
+    required: false
+    default: 'credential-digger-results.sarif'
+  models:
+    description: 'Space-separated list of models to use (e.g., PathModel PasswordModel)'
+    required: false
+    default: 'PathModel'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies and Credential Digger
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install "setuptools<70"
+        pip install --no-cache-dir .
+
+    - name: Run Credential Digger Scan
+      shell: bash
+      run: |
+        credentialdigger add_rules --sqlite /tmp/cd.db ui/backend/rules.yml
+        credentialdigger scan ${{ inputs.repo_path }} --sqlite /tmp/cd.db --models ${{ inputs.models }} --export ${{ inputs.export_sarif }} --format sarif

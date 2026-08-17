@@ -1,32 +1,38 @@
-import tensorflow as tf
-import transformers
-from transformers import TFRobertaForSequenceClassification, RobertaTokenizer
+import logging
+import numpy as np
+import onnxruntime as ort
+from huggingface_hub import hf_hub_download
+from transformers import RobertaTokenizer
 
 from .base_model import BaseModel
 
-# Silence loggers
-tf.get_logger().setLevel('ERROR')
-transformers.logging.set_verbosity(transformers.logging.ERROR)
+logger = logging.getLogger(__name__)
 
 
 class PasswordModel(BaseModel):
 
     def __init__(self,
-                 model='SAP/password-model',
+                 model='SAP/password-model-onnx',
                  tokenizer='microsoft/codebert-base-mlm'):
         """
         Parameters
         ----------
         model: str
-            the model path
-            The transformer model's path
+            The model path or HuggingFace repo id (e.g. 'SAP/password-model-onnx')
         tokenizer: str
-            The tokenizer path
+            The tokenizer path or repo id
         """
-        self.model = TFRobertaForSequenceClassification.from_pretrained(
-            model,
-            num_labels=2)
         self.tokenizer = RobertaTokenizer.from_pretrained(tokenizer)
+        try:
+            # Download model.onnx from HuggingFace repository if repo ID is given or file exists
+            if not model.endswith('.onnx'):
+                onnx_path = hf_hub_download(repo_id=model, filename="model.onnx")
+            else:
+                onnx_path = model
+            self.session = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        except Exception as e:
+            logger.warning(f"Could not load ONNX model session from {model}: {e}")
+            self.session = None
 
     def analyze_batch(self, discoveries):
         """ Analyze a snippet and predict whether it is a leak or not.
@@ -43,21 +49,19 @@ class PasswordModel(BaseModel):
             The discoveries, with states updated according to
             the model's predictions
         """
-        # We have to classify only the "new" discoveries
+        if not self.session:
+            return discoveries
+
         new_discoveries = [d for d in discoveries if d['state'] == 'new']
         no_new_discoveries = [d for d in discoveries if d['state'] != 'new']
-        # Process new_discoveries if not empty
+
         if new_discoveries:
-            # Create a dataset with all the preprocessed (new) snippets
-            data = self._pre_process([d['snippet'] for d in new_discoveries])
-            # Compute a prediction for each snippet
-            outputs = self.model.predict(data)
-            logits = outputs['logits']
-            predictions = tf.argmax(logits, 1)
-            # Check predictions and set FP discoveries accordingly
+            snippets = [d['snippet'] for d in new_discoveries]
+            predictions = self._predict_snippets(snippets)
             for d, p in zip(new_discoveries, predictions):
                 if p == 0:
                     d['state'] = 'false_positive'
+
         return new_discoveries + no_new_discoveries
 
     def analyze(self, discovery):
@@ -65,47 +69,32 @@ class PasswordModel(BaseModel):
 
         Parameters
         ----------
-        discoveries: list of dict
-            The discoveries
+        discovery: dict
+            The discovery dictionary
 
         Returns
         -------
         bool
-            True if the snippet is safe (i.e., there is no leak).
+            True if the snippet is safe (i.e., false positive / no leak).
             False otherwise
         """
-        # Preprocess the snippet
-        data = self._pre_process([discovery['snippet']])
-        # Classify the processed snippet
-        outputs = self.model.predict(data)
-        predictions = tf.argmax(outputs['logits'], 1)
-        if predictions[0] == 0:
-            # The model classified this snippet as a false positive
-            # (i.e., spam)
+        if not self.session:
+            return False
+
+        predictions = self._predict_snippets([discovery['snippet']])
+        if len(predictions) > 0 and predictions[0] == 0:
             return True
         return False
 
-    def _pre_process(self, snippet):
-        """ Compute encodings of snippets and format them to a standard
-        Tensorflow dataset.
+    def _predict_snippets(self, snippets):
+        """ Run ONNX inference on a list of snippets. """
+        if not self.session or not snippets:
+            return []
 
-        Parameters
-        ----------
-        snippet: list of str
-            The snippet to be preprocessed
+        encodings = self.tokenizer(snippets, truncation=True, padding=True, return_tensors="np")
+        inputs = {k: np.array(v, dtype=np.int64) for k, v in encodings.items() if k in [inp.name for inp in self.session.get_inputs()]}
 
-        Returns
-        -------
-        tf.data.Dataset
-            The dataset to be fed to the classifier
-        """
-        # In our model, encodings and features are the same
-        # So, we don't have to compute features and we can directly use
-        # encodings to create the dataset
-        encodings = self.tokenizer(snippet,
-                                   truncation=True,
-                                   padding=True)
-        # Transform into a tf dataset
-        # Please note that the encodings must be cast to dict in order to avoid
-        # a ValueError at the model prediction
-        return tf.data.Dataset.from_tensor_slices((dict(encodings))).batch(8)
+        outputs = self.session.run(None, inputs)
+        logits = outputs[0]
+        predictions = np.argmax(logits, axis=1)
+        return predictions
