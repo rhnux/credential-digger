@@ -115,3 +115,167 @@ Para maximizar los resultados sin presupuesto, se recomienda un enfoque híbrido
 3. **Fase 3 (Largo Plazo / Mes 5-6)**:
    - Incorporar validación contextual con SLMs locales (Ollama/ONNX).
    - Mejorar la CLI con soporte interactivo `rich` y reportes HTML.
+
+---
+
+## 5. Guía de Ejecución Paso a Paso para Agentes de Inteligencia Artificial (AI Agents)
+
+Esta sección contiene instrucciones estructuradas, deterministas y de bajo consumo de tokens para que **Agentes de IA** ejecuten autónomamente las tareas de la Hoja de Ruta aprobada.
+
+### 5.1 Principios de Diseño e Interpretación para Agentes
+- **Token Efficiency**: Instrucciones estructuradas mediante esquemas directos y comandos sin prosa redundante.
+- **Deterministic Verification**: Cada acción incluye comandos de prueba ejecutables en la terminal para confirmar la correcta implementación.
+- **Strict File Contracts**: Rutas relativas explícitas y firmas de funciones estandarizadas.
+
+---
+
+### 5.2 FASE 1: Core Ligero, Formato SARIF y GitHub Action (Mes 1-2)
+
+#### Tarea 1.1: Implementación del Exportador SARIF v2.1.0
+* **Objetivo**: Permitir la exportación de descubrimientos a formato SARIF estandarizado.
+* **Archivos Afectados**:
+  - Crear: `src/credentialdigger/export/sarif_exporter.py`
+  - Modificar: `src/credentialdigger/cli/export.py` y `src/credentialdigger/client.py`
+  - Crear Test: `tests/unit_tests/test_sarif_exporter.py`
+* **Contrato de Código**:
+  ```python
+  # src/credentialdigger/export/sarif_exporter.py
+  import json
+
+  def export_to_sarif(discoveries: list, rules: list = None) -> dict:
+      """
+      Transforms Credential Digger discoveries into a SARIF v2.1.0 JSON dictionary.
+      Schema URL: https://json.schemastore.org/sarif-2.1.0.json
+      """
+      # Return valid SARIF 2.1.0 structure
+  ```
+* **Paso a Paso del Agente**:
+  1. Crear `src/credentialdigger/export/sarif_exporter.py` con el esquema SARIF 2.1.0 conteniendo `version: "2.1.0"`, `$schema`, y el objeto `runs` con la herramienta `Credential Digger`.
+  2. Mapear cada `discovery` a un objeto `result` dentro de `runs[0].results` especificando `ruleId`, `message.text`, y `locations[0].physicalLocation`.
+  3. Extender el CLI en `src/credentialdigger/cli/export.py` para aceptar el argumento `--format sarif` y escribir el archivo `.sarif`.
+  4. Escribir test unitario en `tests/unit_tests/test_sarif_exporter.py` validando la estructura del JSON exportado.
+* **Comando de Verificación Estándar**:
+  ```bash
+  python3 -m pytest tests/unit_tests/test_sarif_exporter.py
+  ```
+
+---
+
+#### Tarea 1.2: Migración de Inferencia ML de TensorFlow a ONNX Runtime
+* **Objetivo**: Reemplazar `tensorflow` por `onnxruntime` en `PasswordModel` para reducir el peso de instalación a ~150MB.
+* **Archivos Afectados**:
+  - Modificar: `src/credentialdigger/models/password_model.py`
+  - Modificar: `requirements.txt` (reemplazar `tensorflow` por `onnxruntime`)
+* **Contrato de Código**:
+  ```python
+  # src/credentialdigger/models/password_model.py
+  import onnxruntime as ort
+  from transformers import AutoTokenizer
+
+  class PasswordModel(BaseModel):
+      def __init__(self, model_path="SAP/password-model-onnx", tokenizer_path="microsoft/codebert-base-mlm"):
+          self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+          self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+  ```
+* **Paso a Paso del Agente**:
+  1. Convertir el checkpoint del modelo RoBERTa/CodeBERT a `model.onnx` usando `optimum-cli` o script de exportación ONNX.
+  2. Actualizar `PasswordModel` para usar `ort.InferenceSession` en lugar de `TFRobertaForSequenceClassification`.
+  3. Reemplazar la predicción `self.model.predict(data)` por `self.session.run(None, inputs)`.
+  4. Actualizar `requirements.txt` eliminando `tensorflow` y `tf-models-official`, añadiendo `onnxruntime`.
+* **Comando de Verificación Estándar**:
+  ```bash
+  python3 -m pytest tests/unit_tests/test_scans.py
+  ```
+
+---
+
+#### Tarea 1.3: Creación de la GitHub Action Oficial (`action.yml`)
+* **Objetivo**: Proveer una GitHub Action reutilizable para escaneo en pipelines CI/CD.
+* **Archivos Afectados**:
+  - Crear: `action.yml` en la raíz del repositorio.
+* **Contrato de Configuración (`action.yml`)**:
+  ```yaml
+  name: 'Credential Digger Scan'
+  description: 'Scan code for hardcoded secrets and filter false positives with ML'
+  inputs:
+    repo_path:
+      description: 'Target repository path or URL'
+      required: true
+      default: '.'
+    export_sarif:
+      description: 'Path to save output SARIF file'
+      required: false
+      default: 'credential-digger-results.sarif'
+  runs:
+    using: 'composite'
+    steps:
+      - shell: bash
+        run: |
+          pip install --no-cache-dir .
+          credentialdigger add_rules --sqlite /tmp/cd.db ui/backend/rules.yml
+          credentialdigger scan ${{ inputs.repo_path }} --sqlite /tmp/cd.db --models PathModel PasswordModel --export ${{ inputs.export_sarif }} --format sarif
+  ```
+* **Comando de Verificación Estándar**:
+  ```bash
+  actionlint action.yml || echo "Action syntax valid"
+  ```
+
+---
+
+### 5.3 FASE 2: Benchmark Público y Renovación de Documentación (Mes 3-4)
+
+#### Tarea 2.1: Dataset de Prueba y Script de Benchmark Comparativo
+* **Objetivo**: Generar métricas públicas comparando Credential Digger frente a GitLeaks y TruffleHog.
+* **Archivos Afectados**:
+  - Crear: `tests/benchmark/benchmark_runner.py`
+  - Crear: `tests/benchmark/dataset.json` (100 muestras de secretos reales y 100 falsos positivos etiquetados).
+* **Métricas a Calcular**:
+  - $\text{Precisión} = \frac{TP}{TP + FP}$
+  - $\text{Recall} = \frac{TP}{TP + FN}$
+  - $\text{Tasa de Reducción de Falsos Positivos} = \frac{FP_{\text{GitLeaks}} - FP_{\text{CredentialDigger}}}{FP_{\text{GitLeaks}}} \times 100\%$
+* **Comando de Verificación Estándar**:
+  ```bash
+  python3 tests/benchmark/benchmark_runner.py --dataset tests/benchmark/dataset.json
+  ```
+
+---
+
+#### Tarea 2.2: Actualización de Reglas para Servicios Cloud/SaaS Modernos
+* **Objetivo**: Expandir patrones de detección para nuevas claves de API.
+* **Archivos Afectados**:
+  - Modificar: `ui/backend/rules.yml`
+* **Patrones a Agregar**:
+  - OpenAI API Key (`sk-[a-zA-Z0-9]{32,}`)
+  - Anthropic API Key (`sk-ant-api[0-9]{2}-[a-zA-Z0-9_-]{86,}`)
+  - GitHub Fine-Grained Personal Access Token (`github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}`)
+  - AWS Secret Access Key (`[A-Za-z0-9/+=]{40}`)
+* **Comando de Verificación Estándar**:
+  ```bash
+  python3 -m pytest tests/unit_tests/test_file_scanner.py
+  ```
+
+---
+
+### 5.4 FASE 3: Next-Gen AI y Remediación Inteligente (Mes 5-6)
+
+#### Tarea 3.1: Módulo de Detección por Entropía y AST (Abstract Syntax Tree)
+* **Objetivo**: Filtrar asignaciones de variables dummy/test mediante análisis del AST del lenguaje.
+* **Archivos Afectados**:
+  - Crear: `src/credentialdigger/models/ast_model.py`
+  - Modificar: `src/credentialdigger/models/model_manager.py`
+* **Paso a Paso del Agente**:
+  1. Analizar si la línea del hallazgo pertenece a una prueba o variable mock (`test_*`, `mock_*`, `dummy_*`, `example_*`).
+  2. Calcular la entropía de Shannon del token extraído ($H(X) = -\sum P(x_i) \log_2 P(x_i)$).
+  3. Marcar como `false_positive` si la entropía es $< 3.0$ y está contenida en un contexto de test AST.
+* **Comando de Verificación Estándar**:
+  ```bash
+  python3 -m pytest tests/unit_tests/
+  ```
+
+---
+
+### 5.5 Lista de Verificación General para el Agente (Checklist de Finalización)
+Antes de finalizar cualquier tarea de la hoja de ruta, el Agente de IA **debe ejecutar**:
+1. `python3 -m pytest tests/unit_tests` (Asegurar que no existan regresiones).
+2. `git status` (Verificar la limpieza del directorio de trabajo).
+3. Confirmar que la modificación cumple con el principio de **$0 costos de infraestructura externa**.
