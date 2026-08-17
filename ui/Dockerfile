@@ -14,8 +14,9 @@ RUN git config --global http.sslverify false
 # Docker Windows support
 RUN git config --global core.autocrlf false
 
-# Install Credential Digger
-RUN pip install credentialdigger
+# Copy repository source code and install Credential Digger locally
+COPY . /credential-digger-src
+RUN pip install "setuptools<70" && pip install /credential-digger-src
 
 # Keys args (optional, for HTTPS)
 ARG SSL_certificate
