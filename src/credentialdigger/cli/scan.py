@@ -86,6 +86,12 @@ def configure_parser(parser):
     parser.add_argument(
         '--git_token', default=None, type=str,
         help='Git personal access token to authenticate to the git server')
+    parser.add_argument(
+        '--export', default=None, type=str,
+        help='Path to export the scan discoveries file')
+    parser.add_argument(
+        '--format', default='csv', choices=['csv', 'sarif'], type=str,
+        help='Format of the exported file (csv or sarif). Default is csv.')
 
 
 def run(client, args):
@@ -116,5 +122,13 @@ def run(client, args):
         local_repo=args.local,
         git_username=args.git_username,
         git_token=args.git_token)
+
+    export_path = getattr(args, 'export', None)
+    if export_path:
+        from .get_discoveries import export_discoveries
+        export_format = getattr(args, 'format', 'csv')
+        # Retrieve actual discoveries details
+        all_disc = client.get_discoveries(args.repo_url)
+        export_discoveries(all_disc, client, save=export_path, export_format=export_format)
 
     sys.exit(len(discoveries))

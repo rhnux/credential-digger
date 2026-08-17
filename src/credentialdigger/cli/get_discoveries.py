@@ -36,12 +36,15 @@ optional arguments:
 
 import csv
 import io
+import json
 import logging
 import sys
 
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
+
+from ..export.sarif_exporter import export_to_sarif
 
 # Maximum number of discoveries to print. If repo has more discoveries,
 # the user will be given the option to export said discoveries.
@@ -72,7 +75,10 @@ def configure_parser(parser):
             [new, false_positive, addressing, not_relevant, fixed]')
     parser.add_argument(
         '--save', default=None, type=str,
-        help='Path of the .csv file to which we export the discoveries')
+        help='Path of the file to which we export the discoveries')
+    parser.add_argument(
+        '--format', default='csv', choices=['csv', 'sarif'], type=str,
+        help='Format of the exported file (csv or sarif). Default is csv.')
     parser.add_argument(
         '--with_rules', action='store_true',
         help='Return for each discovery its associated rule details')
@@ -151,46 +157,51 @@ def discoveries_to_csv(discoveries):
         logger.exception(exception)
 
 
-def export_csv(discoveries, client, save=False):
-    """ Export discoveries as a CSV file.
+def export_discoveries(discoveries, client, save=False, export_format='csv'):
+    """ Export discoveries as a CSV or SARIF file.
 
     Parameters
     ----------
     discoveries: list
-        List of discoveries from which to generate the CSV
+        List of discoveries to export
     client: `credentialdigger.Client`
         Instance of the client from which we retrieve rules
-    save: bool
-        If True, we do not ask the user to enter a file path for the CSV
-        to be exported
+    save: bool or str
+        If set, path to which export the file. Otherwise prompt the user.
+    export_format: str
+        Format to export ('csv' or 'sarif'). Default is 'csv'.
     """
-    # If there were no discoveries, do not generate any report
-    if not discoveries:
-        console.print('[bold][!] No discoveries found. Report not generated.')
-        return
-    # Check if --save is specified
+    # If there were no discoveries, handle empty export gracefully
     if not save:
         path = ''
-        # Read the export path from the console's input
         while path == '':
-            path = console.input('Path to export CSV:')
+            path = console.input(f'Path to export {export_format.upper()}:')
     else:
-        # if --save argument is set, we use it as an export path
         path = save
 
     try:
-        csv_file = open(path, newline='', mode='w', encoding='utf-8')
+        out_file = open(path, mode='w', encoding='utf-8')
     except IOError as e:
         console.print(f'[red]{e}\n'
                       '[bold][!] Failed to export discoveries.[/]')
     else:
-        with csv_file:
-            with console.status('[bold]Exporting the discoveries...'):
-                data = discoveries_to_csv(discoveries)
-                csv_file.writelines(data)
+        with out_file:
+            with console.status(f'[bold]Exporting discoveries as {export_format.upper()}...'):
+                if export_format.lower() == 'sarif':
+                    rules = client.get_rules() if hasattr(client, 'get_rules') else None
+                    sarif_dict = export_to_sarif(discoveries, rules=rules)
+                    out_file.write(json.dumps(sarif_dict, indent=2))
+                else:
+                    data = discoveries_to_csv(discoveries) if discoveries else ''
+                    out_file.write(data)
                 console.print(
                     f'[bold][!] {len(discoveries)} discoveries have been '
-                    'exported successfully.')
+                    f'exported successfully to {path}.')
+
+
+def export_csv(discoveries, client, save=False):
+    """ Backwards compatibility wrapper for export_csv. """
+    export_discoveries(discoveries, client, save=save, export_format='csv')
 
 
 def filter_discoveries(discoveries, state=None):
@@ -236,9 +247,11 @@ def run(client, args):
     if args.state is not None:
         discoveries = filter_discoveries(discoveries, args.state)
 
+    export_format = getattr(args, 'format', 'csv')
+
     # if --save is specified, export the discoveries and exit
     if args.save is not None:
-        export_csv(discoveries, client, save=args.save)
+        export_discoveries(discoveries, client, save=args.save, export_format=export_format)
         sys.exit(len(discoveries))
 
     if len(discoveries) == 0:
@@ -249,11 +262,11 @@ def run(client, args):
         while response.upper() not in ['Y', 'N', 'YES', 'NO']:
             response = console.input(
                 f'[bold]This repository has more than {MAX_NUMBER_DISCOVERIES}'
-                ' discoveries, export them as .csv instead? (Y/N) ')
+                ' discoveries, export them instead? (Y/N) ')
         if response.upper() in ['N', 'NO']:
             print_discoveries(discoveries, args.repo_url, args.with_rules)
         else:
-            export_csv(discoveries, client)
+            export_discoveries(discoveries, client, export_format=export_format)
     else:
         print_discoveries(discoveries, args.repo_url, args.with_rules)
         console.print(
